@@ -1,0 +1,84 @@
+# =========================
+# STM32CubeIDE
+# =========================
+
+# Build output
+Debug/
+Release/
+
+# Generated binaries
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.srec
+
+# Object files
+*.o
+*.obj
+*.d
+*.su
+
+# GCC generated
+*.stackusage
+*.gcda
+*.gcno
+*.gcov
+
+# STM32CubeIDE metadata
+.settings/
+.metadata/
+
+# CDT index/cache
+.cache/
+.cproject.bak
+
+# Launch configurations (tuỳ chọn)
+*.launch
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+# VSCode
+# =========================
+
+.vscode/
+
+# =========================
+# Eclipse temporary files
+# =========================
+
+*.tmp
+*.log
+*.bak
+*~
+
+# =========================
+# SEGGER
+# =========================
+
+SEGGER*
+JLinkLog.txt
+
+# =========================
+# CMake (nếu có dùng)
+# =========================
+
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# =========================
+# FreeRTOS trace
+# =========================
+
+TraceRecorder/
