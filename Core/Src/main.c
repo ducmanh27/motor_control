@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -64,8 +65,7 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-volatile float g_motor_rpm = 0.0f;       // Tốc độ hiện tại (RPM)
-volatile int8_t g_motor_direction = 0;    // 1: Thuận, -1: Ngược, 0: Đứng yên
+_Atomic float g_motor_vel = 0.0f;
 static PIDController g_pid;
 
 TaskHandle_t xUartTaskHandle = NULL;
@@ -97,17 +97,15 @@ int __io_putchar(int ch) {
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-	traceISR_ENTER();
 	if (huart->Instance == huart2.Instance) {
-
+		BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+		traceISR_ENTER();
 		RingBuffer_Push(&uartRxRingBuffer, uartRxByte);
 		vTaskNotifyGiveFromISR(xUartTaskHandle, &xHigherPriorityTaskWoken);
 		HAL_UART_Receive_IT(&huart2, &uartRxByte, 1);
 		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+		traceISR_EXIT();
 	}
-	traceISR_EXIT();
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
@@ -175,16 +173,16 @@ static void motor_control_handler(void *parameters) {
 	HAL_TIM_Base_Start_IT(&htim2);
 	MotorState_t state = MOTOR_STATE_IDLE;
 	MotorCommand_t cmd;
-	PID_Init(&g_pid, 0.054f,   // Kp
-			0.8f,    // Ki
-			0.0f,     // Kd
-			PID_TICK_S,    // Ts = 10ms
-			-1.0f,    // limMin
-			1.0f      // limMax
+	PID_Init(&g_pid, 0.054f,   	// Kp
+			0.8f,    			// Ki
+			0.0f,     			// Kd
+			PID_TICK_S,    		// Ts = 10ms
+			-1.0f,    			// limMin
+			1.0f      			// limMax
 			);
 	Motor_SetPWM(&htim1, 0);
-	uint16_t telemetry_seq = 0;
-	float target_speed = 110.0f;
+	uint32_t telemetry_seq = 0;
+	float target_vel = 110.0f;
 	float active_setpoint = 0.0f;
 	while (1) {
 		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -197,7 +195,7 @@ static void motor_control_handler(void *parameters) {
 				state = MOTOR_STATE_STOPPING;
 				break;
 			case MSG_CMD_SET_SPEED:
-				target_speed = cmd.data.target_rpm;
+				target_vel = cmd.data.target_vel;
 				break;
 			default:
 				break;
@@ -207,19 +205,19 @@ static void motor_control_handler(void *parameters) {
 		switch (state) {
 		case MOTOR_STATE_RUNNING: {
 			float max_step = ACCEL_RPM_PER_S * PID_TICK_S;
-			active_setpoint = Motor_RampToward(active_setpoint, target_speed,
+			active_setpoint = Motor_RampToward(active_setpoint, target_vel,
 					max_step);
-			u = PID_Compute(&g_pid, active_setpoint, g_motor_rpm);
+			u = PID_Compute(&g_pid, active_setpoint, atomic_load_explicit(&g_motor_vel, memory_order_relaxed));
 			Motor_SetPWM(&htim1, u);
 			break;
 		}
 		case MOTOR_STATE_STOPPING: {
 			float max_step = DECEL_RPM_PER_S * PID_TICK_S;
 			active_setpoint = Motor_RampToward(active_setpoint, 0.0f, max_step);
-			u = PID_Compute(&g_pid, active_setpoint, g_motor_rpm);
+			u = PID_Compute(&g_pid, active_setpoint, atomic_load_explicit(&g_motor_vel, memory_order_relaxed));
 			Motor_SetPWM(&htim1, u);
 
-			if (active_setpoint <= 0.5f && fabsf(g_motor_rpm) <= 0.5f) {
+			if (fabsf(active_setpoint) <= 0.5f && fabsf(atomic_load_explicit(&g_motor_vel, memory_order_relaxed)) <= 0.5f) {
 				Motor_SetPWM(&htim1, 0);
 				PID_Reset(&g_pid);
 				state = MOTOR_STATE_IDLE;
@@ -231,11 +229,10 @@ static void motor_control_handler(void *parameters) {
 		}
 		TelemetryPayload_t tel = { .timestamp_ms = xTaskGetTickCount()
 				* portTICK_PERIOD_MS, .seq = telemetry_seq++, .setpoint_rpm =
-				active_setpoint, .current_rpm = g_motor_rpm, .current_amp =
-				g_motor_current,
-		.pwm_duty = u, .state = (uint8_t) state, .fault_flags = g_fault_flags,
-		};
-		Motor_SendTelemetry(&tel);
+				active_setpoint, .current_rpm = atomic_load_explicit(&g_motor_vel, memory_order_relaxed), .current_amp =
+				g_motor_current, .pwm_duty = u, .state = (uint8_t) state,
+				.fault_flags = g_fault_flags, };
+		Motor_SendTelemetry(&huart2, &tel);
 
 	}
 }
@@ -632,19 +629,12 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
-#define FILTER_DEPTH 4  // Lấy trung bình 4 mẫu gần nhất (trễ thêm 40ms nhưng rất mịn)
 
-float Apply_RPM_Filter(float new_rpm) {
-	static float buffer[FILTER_DEPTH] = { 0 };
-	static uint8_t idx = 0;
-	static float sum = 0;
-
-	sum -= buffer[idx];
-	buffer[idx] = new_rpm;
-	sum += buffer[idx];
-	idx = (idx + 1) % FILTER_DEPTH;
-
-	return sum / FILTER_DEPTH;
+float Apply_RPM_Filter(float input_rpm) {
+	static float filtered_rpm = 0.0f;
+	float alpha = 0.2f; // LPF Coefficient
+	filtered_rpm = alpha * input_rpm + (1.0f - alpha) * filtered_rpm;
+	return filtered_rpm;
 }
 /* USER CODE END 4 */
 
@@ -667,24 +657,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM2) {
 		traceISR_ENTER();
 
-		// 1. Đọc số xung đếm được từ TIM4 (Encoder)
+		// 1. Đọc số xung đếm được từ TIM4 (ép kiểu sang int16_t để lấy dấu âm/dương)
 		int16_t raw_cnt = (int16_t) __HAL_TIM_GET_COUNTER(&htim4);
 
 		// 2. Reset counter về 0 ngay lập tức
 		__HAL_TIM_SET_COUNTER(&htim4, 0);
 
-		// 3. Tính tốc độ RPM
-		float raw_rpm = fabsf(((float) raw_cnt / 3960.0f) * 6000.0f);
-		g_motor_rpm = Apply_RPM_Filter(raw_rpm);
+		// 3. Tính vận tốc RPM mang dấu (Bỏ fabsf)
+		// Nếu motor quay thuận mà raw_cnt bị âm, đổi thành: (-raw_cnt / 3960.0f)
+		float raw_rpm = ((float) raw_cnt / 3960.0f) * 6000.0f;
 
-		// 4. Xác định chiều quay
-		if (raw_cnt > 0) {
-			g_motor_direction = 1;   // Quay thuận
-		} else if (raw_cnt < 0) {
-			g_motor_direction = -1;  // Quay ngược
-		} else {
-			g_motor_direction = 0;   // Đứng yên
-		}
+		// 4. Lọc bùn/nhiễu qua bộ lọc Low-Pass Filter (hàm filter cần hỗ trợ số âm)
+		atomic_store_explicit(&g_motor_vel, Apply_RPM_Filter(raw_rpm), memory_order_relaxed);
+
+		// 5. Unblock Task điều khiển
 		BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 		vTaskNotifyGiveFromISR(xMotorControlTaskHandle,
 				&xHigherPriorityTaskWoken);

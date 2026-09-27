@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "stm32f4xx_hal.h"
 
 typedef enum {
     MSG_CMD_START              = 0x01,
@@ -44,7 +45,7 @@ typedef enum {
 typedef struct {
 	MotorMsgId_t id;
     union {
-        float target_rpm;   /* dùng khi id == MOTOR_CMD_SET_SPEED */
+        float target_vel;   /* dùng khi id == MOTOR_CMD_SET_SPEED */
     } data;
 } __attribute__((packed)) MotorCommand_t;
 
@@ -69,6 +70,6 @@ size_t Motor_PackTelemetry(const TelemetryPayload_t *tel, uint8_t *buf, size_t c
 bool   Motor_UnpackTelemetry(const uint8_t *buf, uint16_t len, TelemetryPayload_t *out);
 
 /* Wrapper gửi telemetry */
-bool   Motor_SendTelemetry(const TelemetryPayload_t *tel);
+bool   Motor_SendTelemetry(UART_HandleTypeDef* huart, const TelemetryPayload_t *tel);
 
 #endif /* MOTOR_PROTOCOL_H_ */

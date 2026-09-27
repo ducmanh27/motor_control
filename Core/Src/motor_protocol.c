@@ -7,7 +7,7 @@
 #include "motor_protocol.h"
 #include "frame_codec.h"
 #include <string.h>
-#include "stm32f4xx_hal.h"
+
 /* ===================== COMMAND ===================== */
 
 size_t Motor_PackCommand(const MotorCommand_t *cmd, uint8_t *buf, size_t cap)
@@ -55,10 +55,9 @@ bool Motor_UnpackTelemetry(const uint8_t *buf, uint16_t len, TelemetryPayload_t 
 
 /* ===================== SEND WRAPPER ===================== */
 
-extern UART_HandleTypeDef huart2;
 extern volatile uint8_t   g_uart_tx_busy;
 
-bool Motor_SendTelemetry(const TelemetryPayload_t *tel)
+bool Motor_SendTelemetry(UART_HandleTypeDef* huart, const TelemetryPayload_t *tel)
 {
     if (g_uart_tx_busy) {
         return false;
@@ -83,7 +82,7 @@ bool Motor_SendTelemetry(const TelemetryPayload_t *tel)
     }
 
     g_uart_tx_busy = 1;
-    if (HAL_UART_Transmit_DMA(&huart2, txFrameBuf, (uint16_t)encodedLen) != HAL_OK) {
+    if (HAL_UART_Transmit_DMA(huart, txFrameBuf, (uint16_t)encodedLen) != HAL_OK) {
         g_uart_tx_busy = 0;
         return false;
     }
